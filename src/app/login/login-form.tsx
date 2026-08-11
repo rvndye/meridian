@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-export function LoginForm() {
+export function LoginForm({ next = "/" }: { next?: string }) {
   const router = useRouter();
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -24,7 +24,7 @@ export function LoginForm() {
         setError(data.error ?? "Login failed.");
         return;
       }
-      router.push("/");
+      router.push(next);
       router.refresh();
     } finally {
       setBusy(false);

@@ -27,7 +27,11 @@ export async function middleware(req: NextRequest) {
     }
     const url = req.nextUrl.clone();
     url.pathname = "/login";
-    url.search = "";
+    // Preserve the destination (path + query) so flows that return from an
+    // external redirect — e.g. Plaid OAuth with its oauth_state_id — resume
+    // after login instead of dead-ending at the dashboard.
+    const dest = req.nextUrl.pathname + req.nextUrl.search;
+    url.search = dest !== "/" ? `?next=${encodeURIComponent(dest)}` : "";
     return NextResponse.redirect(url);
   }
   return res;

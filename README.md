@@ -66,6 +66,7 @@ cp .env.example .env.local
 | `APP_ENCRYPTION_KEY` | for Plaid | Encrypts access tokens at rest — `openssl rand -hex 32` |
 | `PLAID_CLIENT_ID` / `PLAID_SECRET` | for bank sync | From the Plaid dashboard (sandbox keys are free) |
 | `PLAID_ENV` | no | `sandbox` (default), `development`, or `production` |
+| `PLAID_REDIRECT_URI` | for OAuth banks | e.g. `http://localhost:3000/plaid-oauth`; must exactly match an allowed redirect URI in the Plaid dashboard |
 | `ANTHROPIC_API_KEY` | for AI assistant | The dashboard works fully without it |
 | `ANTHROPIC_MODEL` | no | Defaults to `claude-opus-5` |
 
@@ -102,6 +103,22 @@ npm run db:generate  # regenerate SQL migrations after editing src/db/schema.ts
 Real institutions require Plaid production access (their approval process +
 pay-as-you-go pricing). The app is identical in either mode — only the keys
 change.
+
+#### OAuth institutions (Chase, Capital One, …)
+
+Many large banks authenticate on their own site instead of inside the Link
+window. That flow needs a registered redirect back into Meridian:
+
+1. In the Plaid dashboard, open **Developers → API → Allowed redirect URIs**
+   and add `http://localhost:3000/plaid-oauth` (use your `https://` domain in
+   production — Plaid requires HTTPS outside localhost).
+2. Set `PLAID_REDIRECT_URI` in `.env.local` to that exact value and restart.
+3. Connect as usual. After you log in at the bank, you land on
+   `/plaid-oauth`, which resumes Link automatically and finishes the import.
+
+To try it in sandbox, search for **Platypus OAuth Bank** in the Link window —
+it simulates the full redirect round-trip. If `PLAID_REDIRECT_URI` is unset,
+non-OAuth institutions keep working; OAuth ones won't appear.
 
 ### 4. Tests
 
