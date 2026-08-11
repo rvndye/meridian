@@ -104,12 +104,19 @@ export class PlaidFinancialDataProvider implements FinancialDataProvider {
   readonly name = "plaid";
 
   async createLinkToken(): Promise<{ linkToken: string }> {
+    // OAuth institutions (Chase, Capital One, …) bounce through the bank's
+    // own login page and need a registered redirect back into this app.
+    // PLAID_REDIRECT_URI must exactly match an "Allowed redirect URI" in the
+    // Plaid dashboard (API → Allowed redirect URIs), e.g.
+    // http://localhost:3000/plaid-oauth in sandbox.
+    const redirectUri = process.env.PLAID_REDIRECT_URI;
     const res = await client().linkTokenCreate({
       user: { client_user_id: "meridian-single-user" },
       client_name: "Meridian",
       products: [Products.Transactions],
       country_codes: [CountryCode.Us],
       language: "en",
+      ...(redirectUri ? { redirect_uri: redirectUri } : {}),
     });
     return { linkToken: res.data.link_token };
   }
