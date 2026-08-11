@@ -1,26 +1,64 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/*
+  Theme tokens. Palette follows the validated dataviz reference palette
+  (categorical slots 1-8, diverging blue<->red, warm-neutral surfaces).
+*/
+@theme {
+  --color-bg: #f7f7f5;
+  --color-surface: #ffffff;
+  --color-surface-2: #fcfcfb;
+  --color-border: #e7e5e0;
+  --color-border-strong: #d6d4cd;
+  --color-ink: #1a1a19;
+  --color-ink-2: #52514e;
+  --color-ink-3: #8f8d86;
+  --color-accent: #2a78d6;
+  --color-accent-soft: #eaf2fc;
+  --color-pos: #1baf7a;
+  --color-pos-soft: #e6f6f0;
+  --color-neg: #e34948;
+  --color-neg-soft: #fdeeee;
+  --color-warn: #eda100;
+  --color-series-1: #2a78d6;
+  --color-series-2: #eb6834;
+  --color-series-3: #1baf7a;
+  --color-series-4: #eda100;
+  --color-series-5: #e87ba4;
+  --color-series-6: #008300;
+  --color-series-7: #4a3aa7;
+  --color-series-8: #e34948;
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  color-scheme: light;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Columns of figures align; large standalone values use proportional figures */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: var(--color-accent-soft);
+}
+
+/* Recharts text inherits ink tokens, never series colors */
+.recharts-text {
+  fill: var(--color-ink-3);
+  font-size: 11px;
+}
+.recharts-cartesian-axis-line,
+.recharts-cartesian-axis-tick-line {
+  stroke: var(--color-border);
 }
