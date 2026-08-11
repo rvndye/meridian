@@ -12,6 +12,8 @@ export const cents = (n: number) => Math.round(n * 100);
 
 export async function seedDemoIfEmpty(): Promise<void> {
   if (process.env.DEMO_DATA === "false") return;
+  // Never auto-seed a production runtime, regardless of DEMO_DATA.
+  if (process.env.VERCEL || process.env.NODE_ENV === "production") return;
   const d = db();
   const existing = await d.select().from(schema.accounts).limit(1);
   if (existing.length > 0) return;

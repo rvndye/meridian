@@ -25,11 +25,30 @@ const g = globalThis as unknown as {
   __dbReady?: Promise<void>;
 };
 
+/** True on Vercel or any NODE_ENV=production server. */
+export function isProductionRuntime(): boolean {
+  return !!process.env.VERCEL || process.env.NODE_ENV === "production";
+}
+
 function createDb(): Db {
   const url = process.env.DATABASE_URL;
   if (url) {
-    const pool = new Pool({ connectionString: url, max: 5 });
+    // Serverless: one connection per function instance — Supabase's pooler
+    // (or the platform) provides the real concurrency. Local dev keeps a
+    // small pool for snappier parallel queries.
+    const pool = new Pool({
+      connectionString: url,
+      max: process.env.VERCEL ? 1 : 5,
+    });
     return drizzlePg(pool, { schema });
+  }
+  // PGlite is a LOCAL-DEV convenience only: on a serverless platform its
+  // file store is ephemeral and per-instance — silently "working" there
+  // would mean silent data loss. Fail loudly instead.
+  if (isProductionRuntime()) {
+    throw new Error(
+      "DATABASE_URL is not set. Production refuses to fall back to the embedded local database — configure a Postgres connection string (e.g. Supabase).",
+    );
   }
   const dataDir = process.env.PGLITE_DIR ?? ".data/pglite";
   mkdirSync(dataDir, { recursive: true }); // PGlite won't create parent dirs
@@ -43,12 +62,23 @@ export function db(): Db {
 }
 
 /**
- * Ensure migrations (and demo seed, if enabled) have run. Called lazily by
- * the repository so `npm run dev` works with zero setup.
+ * Ensure the database is ready.
+ *
+ * Local dev: lazily applies migrations and (unless DEMO_DATA=false) seeds
+ * the demo dataset, so `npm run dev` works with zero setup.
+ *
+ * Production (Vercel / NODE_ENV=production): does neither. Migrations are
+ * applied once at deploy time (`npm run db:migrate` with the production
+ * DATABASE_URL) — running them lazily from concurrently-booting serverless
+ * instances would race, and demo data must never appear in production.
  */
 export async function ensureDbReady(): Promise<void> {
   if (!g.__dbReady) {
     g.__dbReady = (async () => {
+      if (isProductionRuntime()) {
+        db(); // constructs the client; throws if DATABASE_URL is missing
+        return;
+      }
       const { migrateDb } = await import("./migrate");
       await migrateDb(db());
       const { seedDemoIfEmpty } = await import("./seed-demo");

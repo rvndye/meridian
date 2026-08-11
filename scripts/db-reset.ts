@@ -8,6 +8,17 @@ import { migrateDb } from "../src/db/migrate";
 import { seedDemo } from "../src/db/seed-demo";
 
 async function main() {
+  // Refuse to drop a remote (e.g. production Supabase) database unless
+  // explicitly forced. Local PGlite and localhost Postgres are fine.
+  const url = process.env.DATABASE_URL;
+  const isRemote =
+    url && !/@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
+  if (isRemote && process.env.FORCE_DB_RESET !== "yes") {
+    console.error(
+      "Refusing to reset a remote database. If you REALLY mean it, re-run with FORCE_DB_RESET=yes.",
+    );
+    process.exit(1);
+  }
   const d = db();
   await d.execute(sql`
     drop table if exists
