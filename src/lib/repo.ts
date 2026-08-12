@@ -9,6 +9,8 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { db, ensureDbReady, schema } from "@/db/client";
 import type {
   Account,
+  Asset,
+  AssetValuation,
   BalanceSnapshot,
   CategoryRule,
   RecurringItem,
@@ -289,6 +291,282 @@ export async function refreshRecurring(today: string): Promise<void> {
       })),
     );
   }
+}
+
+// ---------- assets & valuations ----------
+
+type AssetRow = typeof schema.assets.$inferSelect;
+type ValuationRow = typeof schema.assetValuations.$inferSelect;
+
+function assetFromRow(r: AssetRow): Asset {
+  return {
+    id: r.id,
+    name: r.name,
+    assetType: r.assetType as Asset["assetType"],
+    description: r.description,
+    address: r.address,
+    purchaseDate: r.purchaseDate,
+    purchasePrice:
+      r.purchasePriceCents !== null ? toDollars(r.purchasePriceCents) : null,
+    currentValue: toDollars(r.currentValueCents),
+    valuationMethod: r.valuationMethod as Asset["valuationMethod"],
+    currency: r.currency,
+    details: (r.details as Asset["details"]) ?? null,
+    liabilityAccountId: r.liabilityAccountId,
+    createdAt: r.createdAt.toISOString(),
+    updatedAt: r.updatedAt.toISOString(),
+  };
+}
+
+function valuationFromRow(r: ValuationRow): AssetValuation {
+  return {
+    id: r.id,
+    assetId: r.assetId,
+    valuationDate: r.valuationDate,
+    value: toDollars(r.valueCents),
+    valueLow: r.valueLowCents !== null ? toDollars(r.valueLowCents) : null,
+    valueHigh: r.valueHighCents !== null ? toDollars(r.valueHighCents) : null,
+    source: r.source as AssetValuation["source"],
+    notes: r.notes,
+    createdAt: r.createdAt.toISOString(),
+  };
+}
+
+export async function getAssets(): Promise<Asset[]> {
+  await ensureDbReady();
+  const rows = await db().select().from(schema.assets).orderBy(schema.assets.name);
+  return rows.map(assetFromRow);
+}
+
+export async function getAsset(id: string): Promise<Asset | null> {
+  await ensureDbReady();
+  const [row] = await db()
+    .select()
+    .from(schema.assets)
+    .where(eq(schema.assets.id, id))
+    .limit(1);
+  return row ? assetFromRow(row) : null;
+}
+
+/** All valuations, oldest first (optionally for one asset). */
+export async function getAssetValuations(
+  assetId?: string,
+): Promise<AssetValuation[]> {
+  await ensureDbReady();
+  const q = db().select().from(schema.assetValuations);
+  const rows = assetId
+    ? await q.where(eq(schema.assetValuations.assetId, assetId))
+    : await q;
+  return rows
+    .map(valuationFromRow)
+    .sort(
+      (a, b) =>
+        a.valuationDate.localeCompare(b.valuationDate) ||
+        a.createdAt.localeCompare(b.createdAt),
+    );
+}
+
+export interface AssetInput {
+  name: string;
+  assetType: Asset["assetType"];
+  description?: string | null;
+  address?: string | null;
+  purchaseDate?: string | null;
+  purchasePrice?: number | null;
+  valuationMethod: Asset["valuationMethod"];
+  details?: Asset["details"];
+  liabilityAccountId?: string | null;
+  /** Initial value — recorded as the first (manual) valuation. */
+  currentValue: number;
+  valuationDate?: string;
+}
+
+export async function createAsset(input: AssetInput): Promise<Asset> {
+  await ensureDbReady();
+  const d = db();
+  const id = `asset_${randomUUID()}`;
+  const now = new Date();
+  await d.insert(schema.assets).values({
+    id,
+    name: input.name,
+    assetType: input.assetType,
+    description: input.description ?? null,
+    address: input.address ?? null,
+    purchaseDate: input.purchaseDate ?? null,
+    purchasePriceCents:
+      input.purchasePrice != null ? toCents(input.purchasePrice) : null,
+    currentValueCents: toCents(input.currentValue),
+    valuationMethod: input.valuationMethod,
+    details: input.details ?? null,
+    liabilityAccountId: input.liabilityAccountId ?? null,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await d.insert(schema.assetValuations).values({
+    id: `val_${randomUUID()}`,
+    assetId: id,
+    valuationDate:
+      input.valuationDate ?? now.toISOString().slice(0, 10),
+    valueCents: toCents(input.currentValue),
+    source: "manual",
+    notes: "Initial value",
+  });
+  return (await getAsset(id))!;
+}
+
+export interface AssetPatch {
+  name?: string;
+  description?: string | null;
+  address?: string | null;
+  purchaseDate?: string | null;
+  purchasePrice?: number | null;
+  valuationMethod?: Asset["valuationMethod"];
+  details?: Asset["details"];
+  liabilityAccountId?: string | null;
+}
+
+export async function updateAsset(
+  id: string,
+  patch: AssetPatch,
+): Promise<Asset | null> {
+  await ensureDbReady();
+  const d = db();
+  const existing = await getAsset(id);
+  if (!existing) return null;
+  await d
+    .update(schema.assets)
+    .set({
+      ...(patch.name !== undefined && { name: patch.name }),
+      ...(patch.description !== undefined && { description: patch.description }),
+      ...(patch.address !== undefined && { address: patch.address }),
+      ...(patch.purchaseDate !== undefined && { purchaseDate: patch.purchaseDate }),
+      ...(patch.purchasePrice !== undefined && {
+        purchasePriceCents:
+          patch.purchasePrice != null ? toCents(patch.purchasePrice) : null,
+      }),
+      ...(patch.valuationMethod !== undefined && {
+        valuationMethod: patch.valuationMethod,
+      }),
+      ...(patch.details !== undefined && { details: patch.details }),
+      ...(patch.liabilityAccountId !== undefined && {
+        liabilityAccountId: patch.liabilityAccountId,
+      }),
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.assets.id, id));
+  // valuationMethod changes can change the effective value
+  await recomputeAssetValue(id);
+  return getAsset(id);
+}
+
+export async function deleteAsset(id: string): Promise<boolean> {
+  await ensureDbReady();
+  const d = db();
+  const existing = await getAsset(id);
+  if (!existing) return false;
+  await d
+    .delete(schema.assetValuations)
+    .where(eq(schema.assetValuations.assetId, id));
+  await d.delete(schema.assets).where(eq(schema.assets.id, id));
+  return true;
+}
+
+export interface ValuationInput {
+  valuationDate: string;
+  value: number;
+  source: AssetValuation["source"];
+  valueLow?: number | null;
+  valueHigh?: number | null;
+  notes?: string | null;
+}
+
+/**
+ * Append a valuation to the history (never overwrites previous records) and
+ * refresh the asset's denormalized effective value.
+ */
+export async function addAssetValuation(
+  assetId: string,
+  input: ValuationInput,
+): Promise<AssetValuation | null> {
+  await ensureDbReady();
+  const d = db();
+  const asset = await getAsset(assetId);
+  if (!asset) return null;
+  const id = `val_${randomUUID()}`;
+  await d.insert(schema.assetValuations).values({
+    id,
+    assetId,
+    valuationDate: input.valuationDate,
+    valueCents: toCents(input.value),
+    valueLowCents: input.valueLow != null ? toCents(input.valueLow) : null,
+    valueHighCents: input.valueHigh != null ? toCents(input.valueHigh) : null,
+    source: input.source,
+    notes: input.notes ?? null,
+  });
+  await recomputeAssetValue(assetId);
+  const rows = await getAssetValuations(assetId);
+  return rows.find((v) => v.id === id) ?? null;
+}
+
+/** Re-derive the denormalized current value from the valuation history. */
+async function recomputeAssetValue(assetId: string): Promise<void> {
+  const d = db();
+  const asset = await getAsset(assetId);
+  if (!asset) return;
+  const valuations = await getAssetValuations(assetId);
+  const { effectiveAssetValue } = await import("./domain/assets");
+  const effective = effectiveAssetValue(asset, valuations);
+  await d
+    .update(schema.assets)
+    .set({ currentValueCents: toCents(effective.value), updatedAt: new Date() })
+    .where(eq(schema.assets.id, assetId));
+}
+
+// ---------- statement imports ----------
+
+export async function findStatementImport(
+  accountId: string,
+  fileHash: string,
+) {
+  await ensureDbReady();
+  const [row] = await db()
+    .select()
+    .from(schema.statementImports)
+    .where(
+      and(
+        eq(schema.statementImports.accountId, accountId),
+        eq(schema.statementImports.fileHash, fileHash),
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+export async function recordStatementImport(input: {
+  accountId: string;
+  source: string;
+  fileHash: string;
+  periodStart: string | null;
+  periodEnd: string | null;
+  importedCount: number;
+  duplicateCount: number;
+  uncertainCount: number;
+}): Promise<void> {
+  await ensureDbReady();
+  await db()
+    .insert(schema.statementImports)
+    .values({ id: `imp_${randomUUID()}`, ...input })
+    .onConflictDoUpdate({
+      target: [
+        schema.statementImports.accountId,
+        schema.statementImports.fileHash,
+      ],
+      set: {
+        importedCount: input.importedCount,
+        duplicateCount: input.duplicateCount,
+        uncertainCount: input.uncertainCount,
+      },
+    });
 }
 
 // ---------- sync events ----------

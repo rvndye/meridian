@@ -15,13 +15,20 @@ import {
   isSpending,
   lastMonths,
   monthlyCashFlow,
-  netWorth,
   netWorthSeries,
   spendingByCategory,
   spendingByMerchant,
   totalsForRange,
 } from "@/lib/domain/analytics";
 import { CATEGORIES, categoryName } from "@/lib/domain/categories";
+import {
+  assetAppreciation,
+  assetEquity,
+  assetValueSeries,
+  effectiveAssetValue,
+  liquidBreakdown,
+  netWorthBreakdown,
+} from "@/lib/domain/assets";
 
 const round = (n: number) => Math.round(n * 100) / 100;
 
@@ -56,17 +63,43 @@ export function buildAssistantTools() {
     betaTool({
       name: "get_net_worth",
       description:
-        "Net worth summary: total assets, total liabilities, net worth, and change over the current month and year.",
+        "Net worth summary: financial assets (connected accounts), other tracked assets (property, vehicles, …), total assets, liabilities, net worth, the liquid share, and change over the current month and year.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       run: async () => {
-        const [accounts, snapshots] = await Promise.all([
+        const [accounts, snapshots, assets, valuations] = await Promise.all([
           repo.getAccounts(),
           repo.getSnapshots(),
+          repo.getAssets(),
+          repo.getAssetValuations(),
         ]);
         const today = todayIso();
-        const nw = netWorth(accounts);
+        const withValues = assets.map((asset) => ({
+          asset,
+          value: asset.currentValue,
+        }));
+        const breakdown = netWorthBreakdown(accounts, withValues);
+        const liquid = liquidBreakdown(accounts, withValues);
+
+        // Time series includes tracked assets (valuations carried forward)
+        const valuationsByAsset = new Map<string, typeof valuations>();
+        for (const v of valuations) {
+          const arr = valuationsByAsset.get(v.assetId) ?? [];
+          arr.push(v);
+          valuationsByAsset.set(v.assetId, arr);
+        }
         const dates = [...new Set(snapshots.map((s) => s.date))].sort();
-        const series = netWorthSeries(accounts, snapshots, dates);
+        const financialSeries = netWorthSeries(accounts, snapshots, dates);
+        const series = financialSeries.map((p) => {
+          let assetTotal = 0;
+          for (const a of assets) {
+            assetTotal += assetValueSeries(
+              a,
+              valuationsByAsset.get(a.id) ?? [],
+              [p.date],
+            )[0].value;
+          }
+          return { date: p.date, netWorth: p.netWorth + assetTotal };
+        });
         const monthStart = [...series]
           .reverse()
           .find((p) => p.date < `${today.slice(0, 7)}-01`);
@@ -74,16 +107,195 @@ export function buildAssistantTools() {
           .reverse()
           .find((p) => p.date < `${today.slice(0, 4)}-01-01`);
         return JSON.stringify({
-          assets: round(nw.assets),
-          liabilities: round(nw.liabilities),
-          netWorth: round(nw.netWorth),
+          financialAssets: round(breakdown.financialAssets),
+          otherAssets: round(breakdown.otherAssets),
+          otherAssetsByType: Object.fromEntries(
+            Object.entries(breakdown.otherAssetsByType).map(([k, v]) => [
+              k,
+              round(v),
+            ]),
+          ),
+          totalAssets: round(breakdown.totalAssets),
+          liabilities: round(breakdown.liabilities),
+          netWorth: round(breakdown.netWorth),
+          liquidAssets: round(liquid.liquid),
+          liquidShareOfAssets:
+            liquid.share !== null ? round(liquid.share) : null,
           changeThisMonth: monthStart
-            ? round(nw.netWorth - monthStart.netWorth)
+            ? round(breakdown.netWorth - monthStart.netWorth)
             : null,
           changeThisYear: yearStart
-            ? round(nw.netWorth - yearStart.netWorth)
+            ? round(breakdown.netWorth - yearStart.netWorth)
             : null,
         });
+      },
+    }),
+
+    betaTool({
+      name: "get_assets",
+      description:
+        "All manually tracked assets (real estate, vehicles, collectibles, …) with current value, valuation method, share of total assets, purchase info, and any linked loan. Sorted largest first.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      run: async () => {
+        const [assets, accounts] = await Promise.all([
+          repo.getAssets(),
+          repo.getAccounts(),
+        ]);
+        const withValues = assets.map((asset) => ({
+          asset,
+          value: asset.currentValue,
+        }));
+        const { totalAssets } = netWorthBreakdown(accounts, withValues);
+        const liabilityById = new Map(accounts.map((a) => [a.id, a]));
+        return JSON.stringify(
+          assets
+            .sort((a, b) => b.currentValue - a.currentValue)
+            .map((a) => {
+              const liability = a.liabilityAccountId
+                ? liabilityById.get(a.liabilityAccountId)
+                : null;
+              const equity = liability
+                ? assetEquity(a.currentValue, liability.currentBalance)
+                : null;
+              return {
+                name: a.name,
+                type: a.assetType,
+                currentValue: round(a.currentValue),
+                valuationMethod: a.valuationMethod,
+                shareOfTotalAssets:
+                  totalAssets > 0 ? round(a.currentValue / totalAssets) : null,
+                purchaseDate: a.purchaseDate,
+                purchasePrice: a.purchasePrice,
+                address: a.address,
+                linkedLiability: liability
+                  ? {
+                      name: liability.name,
+                      balance: round(liability.currentBalance),
+                      equity: round(equity!.equity),
+                    }
+                  : null,
+              };
+            }),
+        );
+      },
+    }),
+
+    betaTool({
+      name: "get_asset_value_history",
+      description:
+        "Valuation history for one tracked asset (matched by name, case-insensitive substring): every recorded valuation with date/source, plus appreciation since purchase and over an optional date range. Use for questions like 'how has my property value changed'.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          asset_name: {
+            type: "string",
+            description: "Asset name or a distinctive part of it",
+          },
+          start_date: { ...dateProp("Optional window start"), },
+          end_date: { ...dateProp("Optional window end") },
+        },
+        required: ["asset_name"],
+        additionalProperties: false,
+      },
+      run: async (input: {
+        asset_name: string;
+        start_date?: string;
+        end_date?: string;
+      }) => {
+        const assets = await repo.getAssets();
+        const needle = input.asset_name.toLowerCase();
+        const asset = assets.find((a) =>
+          a.name.toLowerCase().includes(needle),
+        );
+        if (!asset) {
+          return JSON.stringify({
+            error: `No asset matching "${input.asset_name}". Known assets: ${assets.map((a) => a.name).join(", ") || "none"}`,
+          });
+        }
+        const valuations = await repo.getAssetValuations(asset.id);
+        const effective = effectiveAssetValue(asset, valuations);
+        const window =
+          input.start_date && input.end_date
+            ? assetAppreciation(
+                asset,
+                valuations,
+                input.start_date,
+                input.end_date,
+              )
+            : null;
+        return JSON.stringify({
+          name: asset.name,
+          currentValue: round(effective.value),
+          valueSource: effective.source,
+          automatedEstimate: effective.automated
+            ? {
+                value: round(effective.automated.value),
+                low: effective.automated.valueLow,
+                high: effective.automated.valueHigh,
+                asOf: effective.automated.asOf,
+              }
+            : null,
+          manualValue: effective.manual,
+          purchasePrice: asset.purchasePrice,
+          appreciationSincePurchase:
+            asset.purchasePrice !== null
+              ? round(effective.value - asset.purchasePrice)
+              : null,
+          windowChange: window ? round(window.change) : null,
+          history: valuations.map((v) => ({
+            date: v.valuationDate,
+            value: round(v.value),
+            source: v.source,
+          })),
+        });
+      },
+    }),
+
+    betaTool({
+      name: "get_property_equity",
+      description:
+        "Equity for assets with a linked loan/mortgage: market value, remaining balance, and equity (value minus balance). Without a name, returns every asset that has a linked liability.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          asset_name: {
+            type: "string",
+            description: "Optional asset name filter (substring)",
+          },
+        },
+        additionalProperties: false,
+      },
+      run: async (input: { asset_name?: string }) => {
+        const [assets, accounts] = await Promise.all([
+          repo.getAssets(),
+          repo.getAccounts(),
+        ]);
+        const byId = new Map(accounts.map((a) => [a.id, a]));
+        const needle = input.asset_name?.toLowerCase();
+        const rows = assets
+          .filter((a) => a.liabilityAccountId)
+          .filter((a) => !needle || a.name.toLowerCase().includes(needle))
+          .map((a) => {
+            const liability = byId.get(a.liabilityAccountId!);
+            const { equity, liabilityBalance } = assetEquity(
+              a.currentValue,
+              liability?.currentBalance ?? null,
+            );
+            return {
+              name: a.name,
+              marketValue: round(a.currentValue),
+              liability: liability?.name ?? "unknown",
+              remainingBalance: round(liabilityBalance),
+              equity: round(equity),
+            };
+          });
+        return JSON.stringify(
+          rows.length > 0
+            ? rows
+            : {
+                note: "No assets have a linked loan or mortgage. Equity equals full market value for unlinked assets.",
+              },
+        );
       },
     }),
 

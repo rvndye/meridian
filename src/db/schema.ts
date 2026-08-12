@@ -202,6 +202,97 @@ export const syncEvents = pgTable(
   (t) => [index("sync_started_idx").on(t.startedAt)],
 );
 
+/**
+ * Manually tracked assets (real estate, vehicles, collectibles, …) that are
+ * not available through the financial-data provider. `current_value_cents`
+ * is a denormalized copy of the EFFECTIVE value derived from the valuation
+ * history (see asset_valuations) — the history is the source of truth.
+ */
+export const assets = pgTable("assets", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").references(() => users.id),
+  name: text("name").notNull(),
+  /** real_estate | vehicle | jewelry | collectible | business | cash | other */
+  assetType: text("asset_type").notNull(),
+  description: text("description"),
+  address: text("address"),
+  purchaseDate: text("purchase_date"), // YYYY-MM-DD
+  purchasePriceCents: integer("purchase_price_cents"),
+  currentValueCents: integer("current_value_cents").notNull().default(0),
+  /** manual | automated | hybrid */
+  valuationMethod: text("valuation_method").notNull().default("manual"),
+  currency: text("currency").notNull().default("USD"),
+  /**
+   * Type-specific attributes (extensible without schema churn). Real estate:
+   * propertyType, bedrooms, bathrooms, squareFootage, valuationSource.
+   */
+  details: jsonb("details"),
+  /**
+   * Optional link to a liability account (e.g. a Plaid-imported mortgage)
+   * for equity calculations. The liability stays a normal account — never
+   * duplicated into the asset system.
+   */
+  liabilityAccountId: text("liability_account_id").references(
+    () => accounts.id,
+  ),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/** Append-only valuation history; charts and audit derive from this. */
+export const assetValuations = pgTable(
+  "asset_valuations",
+  {
+    id: text("id").primaryKey(),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => assets.id, { onDelete: "cascade" }),
+    valuationDate: text("valuation_date").notNull(), // YYYY-MM-DD
+    valueCents: integer("value_cents").notNull(),
+    valueLowCents: integer("value_low_cents"),
+    valueHighCents: integer("value_high_cents"),
+    /** manual | automated */
+    source: text("source").notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("val_asset_date_idx").on(t.assetId, t.valuationDate)],
+);
+
+/**
+ * One row per accepted statement upload (Apple Card etc.). file_hash makes
+ * whole-file re-uploads detectable; per-transaction dedup additionally rides
+ * the transactions.provider_transaction_id unique index. The source document
+ * itself is never stored.
+ */
+export const statementImports = pgTable(
+  "statement_imports",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id),
+    /** apple_card_pdf | apple_card_csv */
+    source: text("source").notNull(),
+    fileHash: text("file_hash").notNull(), // sha256 of the uploaded bytes
+    periodStart: text("period_start"),
+    periodEnd: text("period_end"),
+    importedCount: integer("imported_count").notNull().default(0),
+    duplicateCount: integer("duplicate_count").notNull().default(0),
+    uncertainCount: integer("uncertain_count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [uniqueIndex("import_account_hash_idx").on(t.accountId, t.fileHash)],
+);
+
 export const userSettings = pgTable("user_settings", {
   key: text("key").primaryKey(),
   value: jsonb("value"),

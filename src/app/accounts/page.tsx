@@ -5,6 +5,10 @@ import { fmtCurrency, timeAgo } from "@/lib/format";
 import { isLiability } from "@/lib/domain/types";
 import { Badge, Card, PageHeader } from "@/components/ui";
 import { ConnectAccountButton } from "@/components/connect-account";
+import {
+  AddAppleCardButton,
+  ImportStatementButton,
+} from "@/components/apple-card";
 import { isPlaidConfigured } from "@/lib/providers/plaid";
 import { Landmark } from "lucide-react";
 
@@ -27,7 +31,12 @@ export default async function AccountsPage() {
       <PageHeader
         title="Accounts"
         subtitle={`${accounts.length} accounts across ${institutions.length} institutions`}
-        actions={<ConnectAccountButton configured={isPlaidConfigured()} />}
+        actions={
+          <>
+            <AddAppleCardButton />
+            <ConnectAccountButton configured={isPlaidConfigured()} />
+          </>
+        }
       />
 
       <div className="flex flex-col gap-4">
@@ -56,12 +65,17 @@ export default async function AccountsPage() {
                           </span>
                         )}
                         <Badge tone="neutral">{TYPE_LABELS[a.type]}</Badge>
-                        {a.status === "active" ? (
+                        {inst === "Apple Card" ? (
+                          <Badge tone="accent">Statement import</Badge>
+                        ) : a.status === "active" ? (
                           <Badge tone="good">Connected</Badge>
                         ) : a.status === "error" ? (
                           <Badge tone="bad">Error</Badge>
                         ) : (
                           <Badge tone="neutral">Disconnected</Badge>
+                        )}
+                        {inst === "Apple Card" && (
+                          <ImportStatementButton accountId={a.id} />
                         )}
                       </div>
                       <div className="mt-0.5 text-[11px] text-ink-3">
