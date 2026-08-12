@@ -33,6 +33,15 @@ database.
   replacement in place, sync event log, "Sync now"
 - **AI assistant** — Claude with a fixed set of query tools over the analytics
   layer; all arithmetic happens in code, never in the model
+- **Apple Card import** — Apple Card isn't on Plaid; import monthly statement
+  PDFs or Wallet CSV exports instead. Preview before committing, stable
+  dedup ids (re-uploads never duplicate), and imported transactions flow
+  through the same categorization/rules/transfer-detection as everything
+  else. Documents are parsed in memory and never stored.
+- **Assets** — track property, vehicles, and other holdings with an
+  append-only valuation history, manual/automated/hybrid valuation methods
+  (manual override always wins in hybrid), value-over-time charts, optional
+  mortgage linkage for equity, and full net-worth integration
 - **Security** — single-user passphrase auth (encrypted session cookie), Plaid
   tokens encrypted at rest (AES-256-GCM), zod-validated APIs, parameterized
   queries throughout
@@ -69,6 +78,7 @@ cp .env.example .env.local
 | `PLAID_REDIRECT_URI` | for OAuth banks | e.g. `http://localhost:3000/plaid-oauth`; must exactly match an allowed redirect URI in the Plaid dashboard |
 | `ANTHROPIC_API_KEY` | for AI assistant | The dashboard works fully without it |
 | `ANTHROPIC_MODEL` | no | Defaults to `claude-opus-5` |
+| `RENTCAST_API_KEY` | no | Enables automated property estimates on the Assets page; manual valuations always work without it |
 
 ### 2. Database
 

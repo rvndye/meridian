@@ -50,6 +50,19 @@ export async function runSyncAll(): Promise<SyncSummary[]> {
     .where(eq(schema.financialConnections.status, "active"));
   const results: SyncSummary[] = [];
   for (const conn of connections) {
+    if (conn.provider === "manual") {
+      // Manual accounts (e.g. Apple Card) have no upstream to poll —
+      // they update through statement imports.
+      results.push({
+        connectionId: conn.id,
+        status: "success",
+        added: 0,
+        modified: 0,
+        removed: 0,
+        message: "Manual accounts update via statement imports",
+      });
+      continue;
+    }
     results.push(
       conn.provider === "demo"
         ? await refreshDemoConnection(conn)

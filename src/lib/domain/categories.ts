@@ -94,5 +94,8 @@ export function mapProviderCategory(
   if (primary && PROVIDER_CATEGORY_MAP[primary]) {
     return PROVIDER_CATEGORY_MAP[primary];
   }
+  // Importers (e.g. Apple Card) may emit already-normalized category ids.
+  const asId = primary?.toLowerCase();
+  if (asId && CATEGORY_BY_ID.has(asId)) return asId;
   return "other";
 }

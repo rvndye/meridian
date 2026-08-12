@@ -7,6 +7,7 @@ import clsx from "clsx";
 import {
   LayoutDashboard,
   Landmark,
+  Building2,
   ArrowLeftRight,
   PieChart,
   TrendingUp,
@@ -26,6 +27,7 @@ const NAV = [
   { href: "/income", label: "Income", icon: TrendingUp },
   { href: "/recurring", label: "Recurring", icon: RefreshCw },
   { href: "/net-worth", label: "Net Worth", icon: LineChart },
+  { href: "/assets", label: "Assets", icon: Building2 },
   { href: "/assistant", label: "AI Assistant", icon: Sparkles },
   { href: "/settings", label: "Settings", icon: Settings },
 ];

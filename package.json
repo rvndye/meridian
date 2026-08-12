@@ -12,7 +12,8 @@
     "db:reset": "tsx scripts/db-reset.ts",
     "db:generate": "drizzle-kit generate",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "dev:noauth": "APP_PASSWORD= SESSION_SECRET= DEMO_DATA=false PLAID_ENV=sandbox next dev"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
@@ -30,6 +31,7 @@
     "react-plaid-link": "^5.0.0",
     "recharts": "^3.10.1",
     "server-only": "^0.0.1",
+    "unpdf": "^1.8.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

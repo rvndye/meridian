@@ -284,6 +284,61 @@ export function MonthlyBars({
   );
 }
 
+// ---------- Generic value history (assets, single series) ----------
+
+export function ValueHistoryChart({
+  data,
+  height = 220,
+}: {
+  data: { date: string; value: number }[];
+  height?: number;
+}) {
+  return (
+    <div style={{ height }}>
+      <ResponsiveContainer>
+        <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+          <defs>
+            <linearGradient id="assetFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={SPENDING_COLOR} stopOpacity={0.14} />
+              <stop offset="100%" stopColor={SPENDING_COLOR} stopOpacity={0.02} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid stroke={GRID} vertical={false} />
+          <XAxis
+            dataKey="date"
+            tickFormatter={fmtDateShort}
+            axisLine={false}
+            tickLine={false}
+            minTickGap={40}
+          />
+          <YAxis
+            tickFormatter={fmtCompact}
+            axisLine={false}
+            tickLine={false}
+            width={56}
+            domain={["auto", "auto"]}
+          />
+          <Tooltip
+            contentStyle={tooltipStyle}
+            formatter={(v) => [moneyTip(v as number), "Value"]}
+            labelFormatter={(d) => fmtDateShort(String(d))}
+          />
+          <Area
+            type="monotone"
+            dataKey="value"
+            name="Value"
+            stroke={SPENDING_COLOR}
+            strokeWidth={2}
+            fill="url(#assetFill)"
+            dot={{ r: 4, strokeWidth: 2, stroke: "#fff" }}
+            activeDot={{ r: 5, strokeWidth: 2, stroke: "#fff" }}
+          />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 // ---------- Sparkline (stat tiles) ----------
 
 export function Sparkline({
