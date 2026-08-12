@@ -78,7 +78,9 @@ function moneyToCents(raw: string): number | null {
 function classify(description: string, amountCents: number): AppleRowType {
   const d = description.toLowerCase();
   if (/interest charge|interest for/.test(d)) return "interest";
-  if (/\bfee\b/.test(d)) return "fee";
+  // Only explicit fee phrases — merchants legitimately contain "fee"
+  if (/(late|annual|foreign transaction|membership|return(ed)? payment) fee/.test(d))
+    return "fee";
   if (
     amountCents < 0 &&
     /payment|ach deposit|balance transfer in/.test(d)
@@ -196,8 +198,20 @@ export function looksLikeAppleCardStatement(text: string): boolean {
 const TXN_LINE =
   /^(\d{2}\/\d{2}\/\d{4})\s+(.+?)(?:\s+\d{1,2}%\s+\$[\d,]+\.\d{2})?\s+(-?\(?\$[\d,]+\.\d{2}\)?)$/;
 
+// "Jul 1 — Jul 31, 2026": the first date usually has no year — inherit it
+// from the second. Fully-dated ranges also match.
 const PERIOD_RANGE =
-  /([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})\s*[-–—]\s*([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})/;
+  /([A-Za-z]{3,9}\s+\d{1,2})(?:,?\s+(\d{4}))?\s*[-–—]\s*([A-Za-z]{3,9}\s+\d{1,2}),?\s+(\d{4})/;
+
+type Section =
+  | "payments"
+  | "transactions"
+  | "interest"
+  | "installments"
+  | "other";
+
+/** Max continuation lines to join for a wrapped transaction. */
+const MAX_JOIN = 4;
 
 export function parseAppleCardStatementText(text: string): ParsedStatement {
   const lines = text
@@ -210,14 +224,56 @@ export function parseAppleCardStatementText(text: string): ParsedStatement {
   let statementBalanceCents: number | null = null;
   let uncertainCount = 0;
   const rows: AppleCardRow[] = [];
-  let section: "payments" | "transactions" | "interest" | "other" = "other";
+  let section: Section = "other";
+  // Wrapped transactions: the merchant address spills onto following lines
+  // and the amount arrives later. Buffer and join until the pattern matches.
+  let pending: { text: string; joins: number } | null = null;
+
+  const flushPendingAsUncertain = () => {
+    if (pending) uncertainCount++;
+    pending = null;
+  };
+
+  const emit = (line: string): boolean => {
+    const m = line.match(TXN_LINE);
+    if (!m) return false;
+    const date = mdyToIso(m[1]);
+    const cents = moneyToCents(m[3]);
+    const description = m[2].trim();
+    // Section totals sometimes match the pattern; skip obvious ones.
+    if (/^total\b/i.test(description)) return true;
+    if (!date || cents === null || description.length === 0) {
+      uncertainCount++;
+      return true;
+    }
+    const type: AppleRowType =
+      section === "payments"
+        ? "payment"
+        : section === "interest"
+          ? "interest"
+          : classify(description, cents);
+    rows.push({
+      date,
+      postedDate: null,
+      description,
+      merchant: cleanMerchant(description),
+      // Payments/credits on the card are inflows regardless of how the
+      // statement prints the sign.
+      amountCents:
+        type === "payment" || type === "credit" ? -Math.abs(cents) : cents,
+      type,
+      appleCategory: null,
+    });
+    return true;
+  };
 
   for (const line of lines) {
     if (!periodStart) {
       const range = line.match(PERIOD_RANGE);
       if (range) {
-        periodStart = longDateToIso(range[1]);
-        periodEnd = longDateToIso(range[2]);
+        const endYear = range[4];
+        periodStart = longDateToIso(`${range[1]}, ${range[2] ?? endYear}`);
+        periodEnd = longDateToIso(`${range[3]}, ${endYear}`);
       }
     }
     if (statementBalanceCents === null) {
@@ -227,59 +283,59 @@ export function parseAppleCardStatementText(text: string): ParsedStatement {
 
     const lower = line.toLowerCase();
     if (/^payments\b/.test(lower)) {
+      flushPendingAsUncertain();
       section = "payments";
       continue;
     }
     if (/^(transactions|purchases)\b/.test(lower)) {
+      flushPendingAsUncertain();
       section = "transactions";
       continue;
     }
     if (/^interest charged\b/.test(lower)) {
+      flushPendingAsUncertain();
       section = "interest";
       continue;
     }
-    if (/^(total daily cash|daily cash|payment information|statement|apple card customer)/.test(lower)) {
+    // Installment plan details list the ORIGINATION (full financed amount,
+    // old date) — importing that would double-count spending. Skip the
+    // whole section; the monthly charges appear in Transactions normally.
+    if (/^(apple card monthly installments|daily cash from)/.test(lower)) {
+      flushPendingAsUncertain();
+      section = "installments";
+      continue;
+    }
+    if (/^(total daily cash|daily cash|payment information|statement|apple card customer|account information)/.test(lower)) {
+      flushPendingAsUncertain();
       section = "other";
       continue;
     }
 
-    const m = line.match(TXN_LINE);
-    if (m) {
-      const date = mdyToIso(m[1]);
-      const cents = moneyToCents(m[3]);
-      const description = m[2].trim();
-      // Section totals sometimes match the pattern; skip obvious ones.
-      if (/^total\b/i.test(description)) continue;
-      if (!date || cents === null || description.length === 0) {
-        uncertainCount++;
-        continue;
-      }
-      const type: AppleRowType =
-        section === "payments"
-          ? "payment"
-          : section === "interest"
-            ? "interest"
-            : classify(description, cents);
-      rows.push({
-        date,
-        postedDate: null,
-        description,
-        merchant: cleanMerchant(description),
-        // Payments/credits on the card are inflows regardless of how the
-        // statement prints the sign.
-        amountCents:
-          type === "payment" || type === "credit"
-            ? -Math.abs(cents)
-            : cents,
-        type,
-        appleCategory: null,
-      });
+    // Transaction rows only exist inside known transaction sections.
+    if (
+      section !== "payments" &&
+      section !== "transactions" &&
+      section !== "interest"
+    ) {
       continue;
     }
 
-    // A line that starts like a transaction but didn't parse → uncertain.
-    if (/^\d{2}\/\d{2}\/\d{4}\s/.test(line)) uncertainCount++;
+    const startsDated = /^\d{2}\/\d{2}\/\d{4}\s/.test(line);
+    if (startsDated) {
+      flushPendingAsUncertain();
+      if (!emit(line)) pending = { text: line, joins: 0 };
+      continue;
+    }
+    if (pending) {
+      pending = { text: `${pending.text} ${line}`, joins: pending.joins + 1 };
+      if (emit(pending.text)) {
+        pending = null;
+      } else if (pending.joins >= MAX_JOIN) {
+        flushPendingAsUncertain();
+      }
+    }
   }
+  flushPendingAsUncertain();
 
   if (!periodStart && rows.length > 0) {
     const dates = rows.map((r) => r.date).sort();
